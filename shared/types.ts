@@ -491,4 +491,12 @@ export type ServerEvent =
   | { type: 'ai'; ai: AIStatus }
   | { type: 'signin'; signin: AISignIn }
   | { type: 'scout'; scout: ScoutState }
-  | { type: 'toast'; level: 'info' | 'success' | 'error'; text: string };
+  | { type: 'toast'; level: 'info' | 'success' | 'error'; text: string }
+  | { type: 'hermes-cleanup'; cleanup: HermesCleanupState };
+
+/** Removing Hermes Agent runs in the background, so the notice can be closed while it works. */
+export interface HermesCleanupState {
+  removing: boolean;
+  stage?: string; // what it's doing right now
+  result?: { ok: boolean; freedBytes: number; message: string; leftover?: string };
+}

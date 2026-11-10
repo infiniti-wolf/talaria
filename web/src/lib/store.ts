@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { toast } from 'sonner';
-import type { AgentRun, AISignIn, AIStatus, AnswerBankItem, Bootstrap, Job, JobStatus, Preferences, Profile, Report, ScoutState, ServerEvent, Settings } from '@shared/types';
+import type { AgentRun, AISignIn, AIStatus, AnswerBankItem, Bootstrap, HermesCleanupState, Job, JobStatus, Preferences, Profile, Report, ScoutState, ServerEvent, Settings } from '@shared/types';
 import { api } from './api';
 
 interface State {
@@ -16,6 +16,7 @@ interface State {
   ai: AIStatus;
   signin: Record<string, AISignIn>; // in-app sign-ins in progress, by provider
   scout: ScoutState;
+  hermesCleanup: HermesCleanupState | null; // removing Hermes Agent, once, in the background
 }
 
 export const useApp = create<State>(() => ({
@@ -31,6 +32,7 @@ export const useApp = create<State>(() => ({
   ai: { ok: false },
   signin: {},
   scout: { running: false },
+  hermesCleanup: null,
 }));
 
 const set = useApp.setState;
@@ -93,6 +95,9 @@ function apply(ev: ServerEvent) {
       break;
     case 'scout':
       set({ scout: ev.scout });
+      break;
+    case 'hermes-cleanup':
+      set({ hermesCleanup: ev.cleanup });
       break;
     case 'toast':
       if (ev.level === 'error') toast.error(ev.text);

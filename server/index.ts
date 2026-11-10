@@ -2,9 +2,9 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import multer from 'multer';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Bootstrap, Job, JobStatus, Packet, Preferences, Profile, Settings, SetupStatus } from '../shared/types.ts';
+import type { Bootstrap, HermesCleanupState, Job, JobStatus, Packet, Preferences, Profile, Settings, SetupStatus } from '../shared/types.ts';
 import { DIST_DIR, UPLOAD_DIR } from './lib/paths.ts';
-import { addClient, toast } from './lib/events.ts';
+import { addClient, emit, toast } from './lib/events.ts';
 import * as store from './lib/store.ts';
 import { askJson, checkAI, connectProvider, finishRun, getAIStatus, listAccounts, listProviderModels, rateLimitedUntil, startRun, tryModel } from './lib/ai/index.ts';
 import { cancelSignIn, providerInfo, saveApiKey, signInState, signOut, startSignIn } from './lib/ai/providers.ts';
@@ -154,7 +154,16 @@ function measureHermes(home: string) {
 }
 
 /** Whether to show the one-time offer, and how much removing Hermes Agent would free. */
+// Removal runs in the background (it can take many minutes on a slow PC), so the notice can be closed
+// meanwhile; every change is sent to the app, which shows a notification when it's done.
+let hermesCleanup: HermesCleanupState = { removing: false };
+function setHermesCleanup(next: HermesCleanupState) {
+  hermesCleanup = next;
+  emit({ type: 'hermes-cleanup', cleanup: next });
+}
+
 app.get('/api/hermes-cleanup', async (_req, res) => {
+  if (hermesCleanup.removing) return res.json({ show: true, ...hermesCleanup, home: hermesSize?.home });
   if (store.getSettings().hermesCleanup !== 'offer') return res.json({ show: false });
   const found = findHermes();
   if (!found) {
@@ -169,22 +178,31 @@ app.post('/api/hermes-cleanup/dismiss', (_req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/hermes-cleanup/remove', async (_req, res) => {
+app.post('/api/hermes-cleanup/remove', (_req, res) => {
+  if (hermesCleanup.removing) return res.json(hermesCleanup);
   // Bring over any sign-ins not taken yet, before they're gone.
   try {
     importHermesSignIns();
   } catch {}
+  const found = findHermes();
   const h = startRun('test', 'Removing Hermes Agent');
-  try {
-    const r = await removeHermes(t => h.log(t));
-    hermesSize = null;
-    finishRun(h, r.ok, r.message, r.ok ? undefined : r.message);
-    store.setSettings({ hermesCleanup: 'done' });
-    res.json(r);
-  } catch (err: any) {
-    finishRun(h, false, undefined, err.message);
-    res.status(500).json({ ok: false, freedBytes: 0, message: `Couldn't remove Hermes Agent: ${err.message}` });
-  }
+  const stage = (text: string) => setHermesCleanup({ removing: true, stage: text });
+  stage('Getting ready');
+  res.json(hermesCleanup);
+  removeHermes(t => h.log(t), { stage, knownSize: found && hermesSize?.home === found.home ? hermesSize.bytes : undefined })
+    .then(r => {
+      finishRun(h, r.ok, r.message, r.ok ? undefined : r.message);
+      return r;
+    })
+    .catch((err: any) => {
+      finishRun(h, false, undefined, err.message);
+      return { ok: false, freedBytes: 0, message: `Couldn't remove Hermes Agent: ${err.message}` };
+    })
+    .then(result => {
+      hermesSize = null;
+      store.setSettings({ hermesCleanup: 'done' });
+      setHermesCleanup({ removing: false, result });
+    });
 });
 
 app.post('/api/ai/signout', (req, res) => {

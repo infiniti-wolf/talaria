@@ -84,20 +84,32 @@ export interface RemoveResult {
   leftover?: string;
 }
 
-export async function removeHermes(log: (text: string) => void = () => {}): Promise<RemoveResult> {
+/**
+ * `knownSize` is the folder's size when it was already counted (counting several GB of small files
+ * takes a while, so it isn't done twice). `stage` reports progress in plain words.
+ */
+export async function removeHermes(
+  log: (text: string) => void = () => {},
+  opts: { knownSize?: Promise<number>; stage?: (text: string) => void } = {},
+): Promise<RemoveResult> {
   const found = findHermes();
   if (!found) return { ok: true, freedBytes: 0, message: 'Hermes Agent is already gone.' };
   const { home, exe } = found;
-  const before = await folderSize(home);
+  const stage = opts.stage || (() => {});
+  stage('Getting ready');
+  const before = await (opts.knownSize ?? folderSize(home));
 
   // 1. Hermes's own full uninstaller: removes its services, PATH entries and settings it made outside its folder.
+  //    Most of the time goes here: it deletes Hermes's many thousands of small files one by one.
   if (exe) {
+    stage('Hermes Agent’s own uninstaller is removing its files');
     log(`Running Hermes's uninstaller (${exe} uninstall --full --yes)`);
-    const out = await run(exe, ['uninstall', '--full', '--yes'], { ...process.env, HERMES_HOME: home, NO_COLOR: '1', HERMES_ACCEPT_HOOKS: '1' }, 5 * 60_000);
+    const out = await run(exe, ['uninstall', '--full', '--yes'], { ...process.env, HERMES_HOME: home, NO_COLOR: '1', HERMES_ACCEPT_HOOKS: '1' }, 15 * 60_000);
     log(out.replace(/\x1b\[[0-9;]*m/g, '').trim().split('\n').slice(-15).join('\n'));
   }
 
   // 2. Whatever is left (files it couldn't delete while it was running, other profiles), checked again first.
+  if (fs.existsSync(home)) stage('Deleting the files that were left');
   if (fs.existsSync(home) && looksLikeHermes(home)) {
     log(`Deleting what's left in ${home}`);
     await fs.promises.rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 }).catch(err => log(`Couldn't delete everything: ${err.message}`));
@@ -106,6 +118,7 @@ export async function removeHermes(log: (text: string) => void = () => {}): Prom
     if (/^\.?hermes$/i.test(path.basename(home))) await fs.promises.rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 }).catch(() => {});
   }
 
+  if (fs.existsSync(home)) stage('Checking what’s left');
   const after = fs.existsSync(home) ? await folderSize(home) : 0;
   const freedBytes = Math.max(0, before - after);
   if (after > 0) {
